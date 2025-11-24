@@ -1,8 +1,8 @@
-//! Demonstrates how to use VideoCapture + OpenCV with egui.
+//! Demonstrates how to use Media Video Capture Devices + OpenCV with egui.
 //!
 //! Does NOT use the OpenCV feature `videoio` to capture video frames.
 //!
-//! This example uses the [video-capture](https://crates.io/crates/video_capture) crate to capture video frames from a camera.
+//! This example uses the [media](https://github.com/makerpnp/media-rs) crate to capture video frames from a camera.
 //! The frames are then processed using OpenCV and the results are displayed using egui.
 //!
 //! The OpenCV face detection classifier is used to detect faces in the video frames.
@@ -15,7 +15,7 @@
 //! The default is always the latest tested version, currently OpenCV 4.11
 //!
 //! ```
-//! run --package videocapture-and-opencv --bin videocapture-and-opencv --no-default-features --features "opencv-410"
+//! run --package media-rs-and-opencv --bin media-rs-and-opencv --no-default-features --features "opencv-410"
 //! ```
 
 use eframe::epaint::StrokeKind;
@@ -40,15 +40,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use video_capture::error::DeviceError;
-use video_capture::media::media_frame::MediaFrameDescription;
-use video_capture::media::video::PixelFormat;
-use video_capture::{
-    camera::CameraManager,
-    device::{Device, OutputDevice},
-    variant::Variant,
-};
-use x_media::video::VideoFormat;
+use media::device::camera::CameraManager;
+use media::device::{Device, OutputDevice};
+use media::FrameDescriptor;
+use media::variant::Variant;
+use media::video::{PixelFormat, VideoFormat};
 
 fn main() -> eframe::Result {
     env_logger::init();
@@ -82,18 +78,14 @@ struct CameraEnumerationResult {
     modes: BTreeMap<Resolution, BTreeMap<u32, Vec<f32>>>,
 }
 
-fn camera_enumeration_thread_main() -> Result<Vec<CameraEnumerationResult>, DeviceError> {
+fn camera_enumeration_thread_main() -> Result<Vec<CameraEnumerationResult>, media::error::Error> {
     let mut cameras: Vec<CameraEnumerationResult> = vec![];
 
-    let mut cam_mgr = CameraManager::default()?;
+    let mut cam_mgr = CameraManager::new_default()?;
 
-    let device_count = cam_mgr.list().len();
 
-    for index in 0..device_count {
+    for (index, device) in cam_mgr.iter_mut().enumerate() {
         info!("Getting formats for device: {}", index);
-        let Some(device) = cam_mgr.index_mut(index) else {
-            continue;
-        };
 
         // 'device.formats' can't be called until there's an output handler set and the device is started
         let _ = device.set_output_handler(|_| Ok(()));
@@ -182,7 +174,7 @@ struct ModeSelection {
 
 fn camera_thread_main(shared_state: Arc<Mutex<CameraSharedState>>, mode_selection: ModeSelection) {
     // Create a default instance of camera manager
-    let mut cam_mgr = match CameraManager::default() {
+    let mut cam_mgr = match CameraManager::new_default() {
         Ok(cam_mgr) => cam_mgr,
         Err(e) => {
             error!("{:?}", e.to_string());
@@ -204,12 +196,13 @@ fn camera_thread_main(shared_state: Arc<Mutex<CameraSharedState>>, mode_selectio
         let app_state = shared_state.clone();
         move |frame| {
             debug!("frame source: {:?}", frame.source);
-            debug!("frame desc: {:?}", frame.description());
-            debug!("frame timestamp: {:?}", frame.timestamp);
+            debug!("frame desc: {:?}", frame.descriptor());
+            debug!("frame duration: {:?}", frame.duration);
 
             let capture_timestamp = chrono::Utc::now();
             let capture_instant = Instant::now();
-            // TODO using the timestamp from the frame would be better, but need to convert to chrono::DateTime somehow
+
+            // TODO using the duration from the frame would be better, but need to convert to chrono::DateTime and instant somehow
 
             // Map the video frame for memory access
             if let Ok(mapped_guard) = frame.map() {
@@ -284,7 +277,7 @@ fn camera_thread_main(shared_state: Arc<Mutex<CameraSharedState>>, mode_selectio
     let format_code: u32 = mode_selection.video_format.into();
     options["format"] = format_code.into();
 
-    if let Err(e) = device.configure(options) {
+    if let Err(e) = device.configure(&options) {
         error!("{:?}", e.to_string());
     }
 
@@ -311,14 +304,14 @@ fn camera_thread_main(shared_state: Arc<Mutex<CameraSharedState>>, mode_selectio
     }
 }
 
-fn process_frame<'a, F>(frame: &'a video_capture::media::media_frame::MediaFrame, mut f: F)
+fn process_frame<'a, F>(frame: &'a media::frame::Frame, mut f: F)
 where
     F: for<'b> FnMut(Mat),
 {
     let mapped = frame.map().unwrap();
     let planes = mapped.planes().unwrap();
 
-    let MediaFrameDescription::Video(vfd) = frame.description() else {
+    let FrameDescriptor::Video(vfd) = frame.descriptor() else {
         panic!("unsupported frame type");
     };
 
@@ -703,7 +696,7 @@ struct CameraApp {
 }
 
 struct UiState {
-    enumeration_handle: Option<JoinHandle<Result<Vec<CameraEnumerationResult>, DeviceError>>>,
+    enumeration_handle: Option<JoinHandle<Result<Vec<CameraEnumerationResult>, media::error::Error>>>,
     enumerated_cameras: Vec<CameraEnumerationResult>,
     cameras: HashMap<String, CameraState>,
 
